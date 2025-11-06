@@ -1,0 +1,50 @@
+﻿rules:
+  - id: wp-sensitive-path-taint-to-file-apis
+    message: 'Sensitive file exposure: user-controlled path flows to file/require APIs.'
+    languages: [php]
+    severity: ERROR
+    mode: taint
+
+    # 1) taint sources: 슈퍼글로벌
+    pattern-sources:
+      - pattern: $_GET[$X]
+      - pattern: $_POST[$X]
+      - pattern: $_REQUEST[$X]
+      - pattern: $_COOKIE[$X]
+
+    # 2) sanitizers: 경로 세정·검증 함수(통과 시 탐지 안 함)
+    #   - validate_file(): WP 경로 검증 (0이 안전)
+    #   - realpath()/basename(): 경로 정규화/파일명만 추출
+    #   - wp_normalize_path(): 슬래시 정규화
+    #   - sanitize_file_name(): 파일명 정화
+    pattern-sanitizers:
+      - pattern: validate_file($X)
+      - pattern: realpath($X)
+      - pattern: basename($X)
+      - pattern: wp_normalize_path($X)
+      - pattern: sanitize_file_name($X)
+
+    # 3) sinks: 파일 읽기/열기/인클루드 등 (세미콜론 필수)
+    pattern-sinks:
+      - pattern: file_get_contents($P);
+      - pattern: readfile($P);
+      - pattern: fopen($P, $M);
+      - pattern: file($P);
+      - pattern: include $P;
+      - pattern: require $P;
+      - pattern: include_once $P;
+      - pattern: require_once $P;
+
+  # 직접 서빙 패턴(힌트): GET[file] 컨텍스트에서 readfile($file);
+  - id: wp-sensitive-serve-direct
+    languages: [php]
+    severity: WARNING
+    message: 'Direct file serving from user parameter may expose sensitive files.'
+    metadata: { cwe: 'CWE-200', category: security }
+    patterns:
+      - pattern-inside: |
+          if (isset($_GET['file'])) {
+            $file = $_GET['file'];
+            ...
+          }
+      - pattern: readfile($file);

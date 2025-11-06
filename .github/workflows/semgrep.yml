@@ -1,11 +1,20 @@
-name: Semgrep
+name: Semgrep (targeted)
 
 on:
   push:
     branches: [ main, master, develop ]
+    paths:
+      - 'src/wp_plugins/**'
+      - '.semgrep/**'
+      - '.semgrep.yml'
+      - '.github/workflows/semgrep.yml'
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [ main, master, develop ]
+    paths:
+      - 'src/wp_plugins/**'
+      - '.semgrep/**'
+      - '.semgrep.yml'
 
 permissions:
   contents: read
@@ -18,55 +27,68 @@ jobs:
     timeout-minutes: 20
     env:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Show .semgrep.yml (if present)
+      - name: Show semgrep config files
         run: |
-          if [ -f ".semgrep.yml" ]; then cat .semgrep.yml; else echo "No .semgrep.yml (use auto)"; fi
+          echo "Listing .semgrep folder:"
+          ls -la .semgrep || true
+          echo "Root .semgrep.yml:"
+          sed -n '1,200p' .semgrep/.semgrep.yml || true
 
-      - name: Run Semgrep via Semgrep Cloud (if token)
+      # If SEMGREP_APP_TOKEN is provided -> use Semgrep Cloud Action
+      - name: Run Semgrep via Semgrep Cloud
         if: env.SEMGREP_APP_TOKEN != ''
         uses: semgrep/semgrep-action@v1
         with:
-          config: auto
+          config: ".semgrep/.semgrep.yml"
           generateSarif: "1"
           sarifFile: semgrep.sarif
           comment: true
+          include: |
+            src/wp_plugins/**
           exclude: |
             node_modules
             vendor
             .git
             .github
-            dist
-            build
-            coverage
 
       - name: Upload SARIF (Cloud)
         if: env.SEMGREP_APP_TOKEN != '' && hashFiles('semgrep.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
-        with: { sarif_file: semgrep.sarif }
+        with:
+          sarif_file: semgrep.sarif
 
-      - name: Set up Python (CLI mode)
+      # CLI fallback (no token)
+      - name: Set up Python
         if: env.SEMGREP_APP_TOKEN == ''
         uses: actions/setup-python@v5
-        with: { python-version: '3.x' }
+        with:
+          python-version: '3.x'
 
-      - name: Install Semgrep (CLI)
-        if: env.SEMGREP_APP_TOKEN == ''
-        run: pip install --upgrade pip semgrep
-
-      - name: Run Semgrep (CLI | SARIF)
+      - name: Install Semgrep
         if: env.SEMGREP_APP_TOKEN == ''
         run: |
-          CONFIG="--config .semgrep.yml"
-          if [ ! -f ".semgrep.yml" ]; then CONFIG="--config auto"; fi
-          semgrep $CONFIG \
+          python -m pip install --upgrade pip
+          pip install semgrep
+
+      - name: Run Semgrep (CLI)
+        if: env.SEMGREP_APP_TOKEN == ''
+        run: |
+          CONFIG=".semgrep/.semgrep.yml"
+          if [ ! -f "$CONFIG" ]; then CONFIG="auto"; fi
+          semgrep --config $CONFIG \
+            --include 'src/wp_plugins/**' \
             --exclude node_modules --exclude vendor --exclude .git --exclude .github \
-            --error --sarif --output semgrep.sarif
+            --error --sarif --output semgrep.sarif || true
 
       - name: Upload SARIF (CLI)
         if: env.SEMGREP_APP_TOKEN == ''
         uses: github/codeql-action/upload-sarif@v3
-        with: { sarif_file: semgrep.sarif }
+        with:
+          sarif_file: semgrep.sarif

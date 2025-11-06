@@ -1,0 +1,26 @@
+﻿rules:
+  - id: wp-file-upload-move-raw
+    languages: [php]
+    severity: ERROR
+    message: "File upload saved without explicit type/extension checks."
+    metadata: { cwe: "CWE-434", category: security }
+    pattern: move_uploaded_file($_FILES[$X]['tmp_name'], $DEST);
+
+  - id: wp-file-upload-handle-basic
+    languages: [php]
+    severity: WARNING
+    message: "wp_handle_upload used; ensure filetype/extension validation and sanitize_file_name."
+    metadata: { cwe: "CWE-434", category: security }
+    pattern: wp_handle_upload($_FILES[$X], ...);
+
+  # 업로드 후 바로 접근 가능한 경로로 두는 흔한 패턴(간단 경고)
+  - id: wp-file-upload-into-webroot
+    languages: [php]
+    severity: WARNING
+    message: "Uploaded file moved into webroot; ensure executables are disallowed."
+    metadata: { cwe: "CWE-434", category: security }
+    patterns:
+      - pattern: |
+          $dest = $DIR . $_FILES[$X]['name'];
+          ...
+          move_uploaded_file($_FILES[$X]['tmp_name'], $dest);

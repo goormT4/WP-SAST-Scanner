@@ -1,0 +1,23 @@
+# .semgrep/.semgrep.yml
+# 메인 설정: 공식 configs + 프로젝트 커스텀 규칙 포함
+configs:
+  - p/ci
+  - p/security-audit
+  - p/secrets
+  - p/php
+  - p/javascript
+
+# 프로젝트 커스텀 규칙 파일들 (로컬)
+# 순서대로 적용됩니다.
+include:
+  - rules-xss.yml
+  - rules-upload.yml
+  - rules-sensitive.yml
+
+# 기본 제외
+exclude:
+  - node_modules
+  - vendor
+  - .git
+  - .github
+  - "**/*.min.js"
