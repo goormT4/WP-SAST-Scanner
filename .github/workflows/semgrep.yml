@@ -60,6 +60,28 @@ jobs:
             head -n 20 "$CONFIG_FILE"
           fi
 
+
+      - name: Normalize .semgrep rule files (remove BOM / ensure UTF-8)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d ".semgrep" ]; then
+            echo "Normalizing .semgrep/*.yml files (remove BOM if present)"
+            for f in .semgrep/*.yml; do
+              [ -f "$f" ] || continue
+              # show first bytes for debug (optional)
+              head -c 4 "$f" | xxd || true
+              # remove BOM (EF BB BF) if present
+              sed -i '1s/^\xEF\xBB\xBF//' "$f"
+              # ensure file is UTF-8 (convert if needed) — optional fallback
+              # iconv -f cp949 -t utf-8 "$f" -o "${f}.utf8" && mv "${f}.utf8" "$f" || true
+            done
+          else
+            echo ".semgrep directory not present, skipping normalization"
+          fi
+
+
+
       - name: Semgrep debug run (capture stdout/stderr & env)
         shell: bash
         run: |
