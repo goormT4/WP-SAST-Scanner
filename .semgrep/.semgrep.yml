@@ -1,7 +1,6 @@
-
-
 # .semgrep/.semgrep.yml
-# 메인 설정: 공식 packs + 로컬 규칙 포함
+# ---------------------
+# 공식 packs
 configs:
   - p/ci
   - p/security-audit
@@ -9,13 +8,13 @@ configs:
   - p/php
   - p/javascript
 
-# 프로젝트 커스텀 규칙 파일들 (순서대로 적용)
-include:
-  - .semgrep/rules-xss.yml
-  - .semgrep/rules-upload.yml
-  - .semgrep/rules-sensitive.yml
+# 로컬 규칙을 최상위 rules 아래 포함
+rules:
+  - include: .semgrep/rules-xss.yml
+  - include: .semgrep/rules-upload.yml
+  - include: .semgrep/rules-sensitive.yml
 
-# 기본 제외 (추가로 wp-includes/wp-admin도 필요하면 추가)
+# 기본 제외
 exclude:
   - node_modules
   - vendor
@@ -27,6 +26,7 @@ exclude:
   - wp-includes/**
   - wp-admin/**
 
+# 검사할 경로
 paths:
   include:
     - "src/**"
