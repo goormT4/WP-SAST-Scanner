@@ -1,4 +1,4 @@
-name: Semgrep
+name: Semgrep CI
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
 jobs:
   semgrep:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -22,218 +22,52 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: List PHP files
-        shell: bash
-        run: |
-          echo "Repo root: $PWD"
-
-          # print up to 200 php files but ignore broken-pipe errors from head
-          echo "First up to 200 PHP files (truncated):"
-          find . -type f -name "*.php" | head -n 200 || true
-
-          # get total count in a separate command (no pipe to head)
-          echo "Total PHP files:"
-          find . -type f -name "*.php" | wc -l
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.x'
 
       - name: Install Semgrep & jq
-        shell: bash
         run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install --upgrade semgrep
-          sudo apt-get update -y
-          sudo apt-get install -y jq xxd file || true
+          pip install --upgrade pip semgrep
+          sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Prepare config & reports dir
-        shell: bash
+      - name: Normalize .semgrep YAML files
         run: |
-          set -euo pipefail
-          mkdir -p reports debug_out
-
-          if [ -f ".semgrep/.semgrep.yml" ]; then
-            CONFIG_FILE=".semgrep/.semgrep.yml"
-          elif [ -f ".semgrep.yml" ]; then
-            CONFIG_FILE=".semgrep.yml"
-          else
-            CONFIG_FILE="auto"
-          fi
-          echo "CONFIG=$CONFIG_FILE" >> "$GITHUB_ENV"
-          echo "== CONFIG chosen =="
-          echo "$CONFIG_FILE"
-          echo "== List .semgrep dir (if any) =="
-          ls -la .semgrep || true
-          echo "== Show config (first 200 lines) =="
-          if [ -f "$CONFIG_FILE" ]; then
-            sed -n '1,200p' "$CONFIG_FILE" || true
-          fi
-
-      - name: Normalize .semgrep rule files (remove BOM)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -d ".semgrep" ]; then
-            echo "Normalizing .semgrep/*.yml files (remove BOM if present)"
-            for f in .semgrep/*.yml; do
-              [ -f "$f" ] || continue
-              echo "First bytes of $f:"; head -c 4 "$f" | xxd || true
-              sed -i '1s/^\xEF\xBB\xBF//' "$f" || true
-            done
-          else
-            echo ".semgrep directory not present, skipping normalization"
-          fi
-
-      - name: Semgrep debug run (capture stdout/stderr & validate)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p reports debug_out
-
-          echo "CONFIG='$CONFIG'"
-          echo "Working dir: $PWD"
-          echo "List .semgrep dir:"; ls -la .semgrep || true
-          echo "Top of rules dir:"; head -n 80 .semgrep/*.yml || true
-
-          # show config
-          if [ "$CONFIG" != "auto" ] && [ -f "$CONFIG" ]; then
-            echo "---- CONFIG content ----"
-            sed -n '1,200p' "$CONFIG" || true
-            echo "---- end CONFIG ----"
-            semgrep --config "$CONFIG" --validate || true
-          else
-            echo "CONFIG is auto or not a file - skipping local validate"
-          fi
-
-          export LC_ALL=en_US.UTF-8
-          export LANG=en_US.UTF-8
-          export PYTHONUTF8=1
-
-          echo "Running semgrep (debug capture) -> debug_out/semgrep.out|err"
-          semgrep scan --config "$CONFIG" --metrics=off --timeout 60 --json -o reports/semgrep.json --debug > debug_out/semgrep.out 2> debug_out/semgrep.err || true
-
-          echo "---- semgrep.out (tail 200) ----"
-          tail -n 200 debug_out/semgrep.out || true
-          echo "---- semgrep.err (tail 200) ----"
-          tail -n 200 debug_out/semgrep.err || true
-
-          echo "reports listing:"; ls -la reports || true
-          echo "reports/semgrep.json exists? $( [ -f reports/semgrep.json ] && echo yes || echo no )"
-
-          # show tmp rules file if any (help debugging missing-rules)
-          echo "Listing /tmp/semgrep-*.rules if present:"
-          ls -la /tmp/semgrep-*.rules 2>/dev/null || true
-          for tf in /tmp/semgrep-*.rules; do
-            [ -f "$tf" ] || continue
-            echo "---- head of $tf ----"
-            sed -n '1,200p' "$tf" || true
+          for f in .semgrep/*.yml; do
+            [ -f "$f" ] || continue
+            sed -i '1s/^\xEF\xBB\xBF//' "$f"
           done
 
-      - name: Run Semgrep JSON scan (non-debug; safe)
-        shell: bash
+      - name: Run Semgrep scan
         run: |
-          set -euo pipefail
-          export LC_ALL=en_US.UTF-8
-          export LANG=en_US.UTF-8
-          export PYTHONUTF8=1
           mkdir -p reports
+          semgrep scan \
+            --config .semgrep/packs-only.yml \
+            --config .semgrep/local-rules.yml \
+            --metrics=off \
+            --timeout 60 \
+            --json -o reports/semgrep.json src/wp_plugins
 
-          if [ "$CONFIG" = "auto" ]; then
-            semgrep scan \
-              --config p/php \
-              --config p/security-audit \
-              --config p/secrets \
-              --metrics=off \
-              --timeout 60 \
-              --json -o reports/semgrep.json src/wp_plugins || true
-          else
-            semgrep scan \
-              --config "$CONFIG" \
-              --metrics=off \
-              --timeout 60 \
-              --json -o reports/semgrep.json src/wp_plugins || true
-          fi
-
-      - name: Run Semgrep SARIF scan (if you want SARIF)
-        shell: bash
+      - name: Summarize findings
         run: |
-          set -euo pipefail
-          mkdir -p reports
-          if [ "$CONFIG" = "auto" ]; then
-            semgrep scan \
-              --config p/php \
-              --config p/security-audit \
-              --config p/secrets \
-              --metrics=off \
-              --timeout 60 \
-              --sarif -o reports/semgrep.sarif src/wp_plugins || true
-          else
-            semgrep scan \
-              --config "$CONFIG" \
-              --metrics=off \
-              --timeout 60 \
-              --sarif -o reports/semgrep.sarif src/wp_plugins || true
-          fi
-
-      - name: Write Semgrep Markdown Summary
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
           echo "## 🧪 Semgrep Summary" >> "$GITHUB_STEP_SUMMARY"
-
           if [ -s reports/semgrep.json ]; then
-            if jq empty reports/semgrep.json 2>/dev/null; then
-              TOTAL=$(jq '.results | length // 0' reports/semgrep.json)
-              echo "- Total findings: **$TOTAL**" >> "$GITHUB_STEP_SUMMARY"
-
-              for sev in ERROR WARNING INFO; do
-                COUNT=$(jq --arg sev "$sev" '[.results[] | select(.extra.severity==$sev)] | length' reports/semgrep.json)
-                echo "  - $sev: **$COUNT**" >> "$GITHUB_STEP_SUMMARY"
-              done
-
-              echo -e "\n### Top findings (up to 10)\n" >> "$GITHUB_STEP_SUMMARY"
-              jq -r '
-                .results[]
-                | {check_id, path: .path, start: .start.line, message: .extra.message, severity: .extra.severity}
-                | "| \(.severity) | \(.check_id) | \(.path):\(.start) | \(.message | gsub(\"\\n\"; \" \")) |"
-              ' reports/semgrep.json | head -n 10 >> "$GITHUB_STEP_SUMMARY" || true
-            else
-              echo "- reports/semgrep.json exists but is invalid JSON. See debug_out/semgrep.err" >> "$GITHUB_STEP_SUMMARY"
-            fi
+            TOTAL=$(jq '.results | length // 0' reports/semgrep.json)
+            echo "- Total findings: **$TOTAL**" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "- Semgrep produced no JSON (likely no matching files). Check debug_out/semgrep.err and List PHP files step." >> "$GITHUB_STEP_SUMMARY"
+            echo "- No results found. Check PHP files and rules." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload SARIF (if exists)
-        if: always()
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload SARIF
         run: |
-          set -euo pipefail
           if [ -f reports/semgrep.sarif ]; then
-            echo "Uploading SARIF to GitHub code scanning..."
             gh api --method POST -H "Accept: application/vnd.github+json" \
               /repos/${{ github.repository }}/code-scanning/sarifs \
               -F "sarif=@reports/semgrep.sarif" \
               -F "commit_sha=${{ github.sha }}" || true
           else
             echo "No SARIF found — skipping upload"
-            ls -la reports || true
           fi
-
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: semgrep-debug
-          path: |
-            reports/**
-            debug_out/**
-            /tmp/semgrep-*.rules
-          if-no-files-found: warn
-          retention-days: 7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
