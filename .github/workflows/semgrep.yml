@@ -22,13 +22,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: List PHP files
-        run: |
-          echo "Repo root: $PWD"
-          find . -type f -name "*.php" | head -n 200
-          echo "Total PHP files:" 
-          find . -type f -name "*.php" | wc -l
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -40,18 +33,17 @@ jobs:
           sudo apt-get update && sudo apt-get install -y jq
 
       - name: Prepare config & reports dir
-        shell: bash
         run: |
           set -euo pipefail
 
-          # 안전 초기화
+          # CONFIG_FILES 초기화
           CONFIG_FILES=""
 
-          # 항상 두 개의 로컬 파일을 우선 추가 (있으면)
+          # 항상 두 가지 로컬 룰 적용
           [ -f ".semgrep/packs-only.yml" ] && CONFIG_FILES+="--config .semgrep/packs-only.yml "
           [ -f ".semgrep/local-rules.yml" ] && CONFIG_FILES+="--config .semgrep/local-rules.yml "
 
-          # fallback: 기존 단일 통합 파일 또는 default packs
+          # fallback: 기존 단일 파일 또는 공식 pack
           if [ -z "$CONFIG_FILES" ]; then
             if [ -f ".semgrep/.semgrep.yml" ]; then
               CONFIG_FILES="--config .semgrep/.semgrep.yml "
@@ -62,22 +54,15 @@ jobs:
             fi
           fi
 
-          # trim trailing whitespace
+          # 공백 제거
           CONFIG_FILES="$(echo -n "$CONFIG_FILES" | sed -e 's/[[:space:]]*$//')"
 
-          # export for later steps
           echo "CONFIG_FILES=$CONFIG_FILES" >> "$GITHUB_ENV"
 
-          # prepare reports dir
-          mkdir -p reports
-
-          # debug output
+          # 디버그
           echo "== CONFIG_FILES chosen =="
           echo "$CONFIG_FILES"
-          echo "== List .semgrep dir (if any) =="
           ls -la .semgrep || true
-          [ -f ".semgrep/packs-only.yml" ] && echo "---- packs-only head ----" && sed -n '1,80p' .semgrep/packs-only.yml || true
-          [ -f ".semgrep/local-rules.yml" ] && echo "---- local-rules head ----" && sed -n '1,80p' .semgrep/local-rules.yml || true
 
       - name: Normalize .semgrep rule files (remove BOM / ensure UTF-8)
         shell: bash
@@ -90,120 +75,66 @@ jobs:
             done
           fi
 
-      - name: Semgrep debug run (capture stdout/stderr)
+      - name: Run Semgrep scan
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p reports debug_out
-          echo "CONFIG_FILES='$CONFIG_FILES'"
-          export LC_ALL=en_US.UTF-8
-          export LANG=en_US.UTF-8
-          export PYTHONUTF8=1
+          mkdir -p reports
 
-          # run semgrep capturing debug (don't fail step on non-zero so we can inspect logs)
-          semgrep scan $CONFIG_FILES --metrics=off --timeout 120 --json -o reports/semgrep.json --sarif -o reports/semgrep.sarif --debug > debug_out/semgrep.out 2> debug_out/semgrep.err || true
+          echo "Running semgrep scan..."
+          semgrep scan $CONFIG_FILES --metrics=off --timeout 120 --json -o reports/semgrep.json src/wp_plugins || true
 
-          echo "---- semgrep.out (tail 200) ----"
-          tail -n 200 debug_out/semgrep.out || true
-          echo "---- semgrep.err (tail 200) ----"
-          tail -n 200 debug_out/semgrep.err || true
-
-          echo "reports directory listing:"
-          ls -la reports || true
-          echo "reports/semgrep.json exists?:" $( [ -f reports/semgrep.json ] && echo yes || echo no )
-          echo "reports/semgrep.sarif exists?:" $( [ -f reports/semgrep.sarif ] && echo yes || echo no )
-
-      - name: Validate JSON & quick summary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -s reports/semgrep.json ] && jq empty reports/semgrep.json 2>/dev/null; then
-            echo "semgrep.json is valid JSON"
-            echo "Total findings: $(jq '.results | length // 0' reports/semgrep.json)"
-          else
-            echo "reports/semgrep.json missing or invalid; check debug_out/semgrep.err"
-          fi
-
-      - name: Write Enhanced Markdown Summary
+      - name: Write full Markdown summary
         shell: bash
         run: |
           set -euo pipefail
           echo "## 🧪 Semgrep Summary" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -s reports/semgrep.json ] && jq empty reports/semgrep.json 2>/dev/null; then
+          if [ -s reports/semgrep.json ]; then
             TOTAL=$(jq '.results | length // 0' reports/semgrep.json)
             echo "- Total findings: **$TOTAL**" >> "$GITHUB_STEP_SUMMARY"
 
-            # Severity counts
+            # Severity별 전체 카운트
             for sev in ERROR WARNING INFO; do
               COUNT=$(jq --arg sev "$sev" '[.results[] | select(.extra.severity==$sev)] | length' reports/semgrep.json)
               echo "  - $sev: **$COUNT**" >> "$GITHUB_STEP_SUMMARY"
             done
 
-            # Top 5 per severity
-            for sev in ERROR WARNING INFO; do
-              echo -e "\n### Top $sev findings (up to 5 per severity)\n" >> "$GITHUB_STEP_SUMMARY"
-              jq -r --arg sev "$sev" '
-                .results
-                | map(select(.extra.severity == $sev))[:5][]
-                | "| \(.extra.severity) | \(.check_id) | \(.path):\(.start.line) | \(.extra.message | gsub("\n"; " ")) |"
-              ' reports/semgrep.json >> "$GITHUB_STEP_SUMMARY"
-            done
-
-            # Critical patterns (SQLi / XSS / RCE)
-            echo -e "\n### 🔥 Critical WP Vulnerabilities (SQLi, XSS, RCE, up to 10)\n" >> "$GITHUB_STEP_SUMMARY"
+            # 전체 결과 Markdown 테이블
+            echo -e "\n### 📋 Full Findings\n" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Severity | Check ID | File | Line | Message |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|---------|----------|------|------|---------|" >> "$GITHUB_STEP_SUMMARY"
             jq -r '
-              .results
-              | map(select(.check_id | test("wp-sqli|wp-xss|wp-command-injection")))[:10][]
-              | "| \(.extra.severity) | \(.check_id) | \(.path):\(.start.line) | \(.extra.message | gsub("\n"; " ")) |"
+              .results[]
+              | "| \(.extra.severity) | \(.check_id) | \(.path) | \(.start.line) | \(.extra.message | gsub("\n"; " ")) |"
             ' reports/semgrep.json >> "$GITHUB_STEP_SUMMARY"
 
-            # Findings grouped by file (compact)
-            echo -e "\n### 📂 Findings grouped by file (top 5 files)\n" >> "$GITHUB_STEP_SUMMARY"
+            # 파일별 그룹핑
+            echo -e "\n### 📂 Findings grouped by file\n" >> "$GITHUB_STEP_SUMMARY"
             jq -r '
               .results
               | group_by(.path)
-              | sort_by(- (length))            # 파일별 결과 많은 순
-              | .[:5]                          # 상위 5개 파일만
               | .[]
               | "#### File: \(. [0].path)"
               , (.[] | "| \(.extra.severity) | \(.check_id) | \(.start.line) | \(.extra.message | gsub("\n"; " ")) |")
             ' reports/semgrep.json >> "$GITHUB_STEP_SUMMARY"
 
           else
-            echo "- Semgrep produced no JSON (likely no matching files). Check the PHP file listing step." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Semgrep produced no JSON (likely no matching files)." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload SARIF if exists
-        if: always()
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # find sarif (explicit path preferred)
           if [ -f reports/semgrep.sarif ]; then
-            SARIF_FILE="reports/semgrep.sarif"
-          else
-            SARIF_FILE=$(find reports -maxdepth 1 -type f -name '*.sarif' | head -n 1 || true)
-          fi
-
-          if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
-            echo "Uploading SARIF to GitHub code scanning: $SARIF_FILE"
+            echo "Uploading SARIF..."
             gh api --method POST -H "Accept: application/vnd.github+json" \
               /repos/${{ github.repository }}/code-scanning/sarifs \
-              -F "sarif=@${SARIF_FILE}" \
+              -F "sarif=@reports/semgrep.sarif" \
               -F "commit_sha=${{ github.sha }}" || true
           else
-            echo "No SARIF file found — skipping upload"
-            ls -la reports || true
+            echo "No SARIF found — skipping upload"
           fi
-
-      - name: Upload reports as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: semgrep-reports
-          path: reports/*, debug_out/*
-          if-no-files-found: warn
-          retention-days: 14
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
