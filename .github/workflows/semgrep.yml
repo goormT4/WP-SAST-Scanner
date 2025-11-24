@@ -36,6 +36,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p reports
+
           # CONFIG_FILES 초기화
           CONFIG_FILES=""
 
@@ -79,62 +81,70 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p reports
-
           echo "Running semgrep scan..."
-          semgrep scan $CONFIG_FILES --metrics=off --timeout 120 --json -o reports/semgrep.json src/wp_plugins || true
 
-      - name: Write full Markdown summary
+          # ⚠️ 여기 타겟 경로를 실제 코드 위치에 맞게 수정해줘
+          # 예: 전체 레포 스캔 -> `.`
+          TARGET_PATH="src/wp_plugins"
+
+          semgrep scan $CONFIG_FILES \
+            --metrics=off \
+            --timeout 120 \
+            --json -o reports/semgrep.json \
+            "$TARGET_PATH" || true
+
+          if [ ! -s reports/semgrep.json ]; then
+            echo "WARN: reports/semgrep.json 이 비어있거나 생성되지 않았습니다. (타겟 경로/룰 확인 필요)"
+          fi
+
+      - name: Write full Markdown summary (summary + report file)
         shell: bash
         run: |
           set -euo pipefail
-          echo "## 🧪 Semgrep Summary" >> "$GITHUB_STEP_SUMMARY"
+          REPORT_FILE="reports/semgrep-report.md"
+
+          # 헤더
+          echo "## 🧪 Semgrep Summary" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
 
           if [ -s reports/semgrep.json ]; then
             TOTAL=$(jq '.results | length // 0' reports/semgrep.json)
-            echo "- Total findings: **$TOTAL**" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Total findings: **$TOTAL**" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
 
             # Severity별 전체 카운트
             for sev in ERROR WARNING INFO; do
               COUNT=$(jq --arg sev "$sev" '[.results[] | select(.extra.severity==$sev)] | length' reports/semgrep.json)
-              echo "  - $sev: **$COUNT**" >> "$GITHUB_STEP_SUMMARY"
+              echo "  - $sev: **$COUNT**" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
             done
 
-            # 전체 결과 Markdown 테이블
-            echo -e "\n### 📋 Full Findings\n" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Severity | Check ID | File | Line | Message |" >> "$GITHUB_STEP_SUMMARY"
-            echo "|---------|----------|------|------|---------|" >> "$GITHUB_STEP_SUMMARY"
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+            echo "### 📋 Full Findings" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+            echo "| Severity | Check ID | File | Line | Message |" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+            echo "|---------|----------|------|------|---------|" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+
             jq -r '
               .results[]
               | "| \(.extra.severity) | \(.check_id) | \(.path) | \(.start.line) | \(.extra.message | gsub("\n"; " ")) |"
-            ' reports/semgrep.json >> "$GITHUB_STEP_SUMMARY"
+            ' reports/semgrep.json | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
 
-            # 파일별 그룹핑
-            echo -e "\n### 📂 Findings grouped by file\n" >> "$GITHUB_STEP_SUMMARY"
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+            echo "### 📂 Findings grouped by file" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
+
             jq -r '
               .results
               | group_by(.path)
               | .[]
               | "#### File: \(. [0].path)"
               , (.[] | "| \(.extra.severity) | \(.check_id) | \(.start.line) | \(.extra.message | gsub("\n"; " ")) |")
-            ' reports/semgrep.json >> "$GITHUB_STEP_SUMMARY"
+            ' reports/semgrep.json | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
 
           else
-            echo "- Semgrep produced no JSON (likely no matching files)." >> "$GITHUB_STEP_SUMMARY"
+            echo "- Semgrep produced no JSON (likely no matching files or scan failed)." | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
           fi
 
-      - name: Upload SARIF if exists
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f reports/semgrep.sarif ]; then
-            echo "Uploading SARIF..."
-            gh api --method POST -H "Accept: application/vnd.github+json" \
-              /repos/${{ github.repository }}/code-scanning/sarifs \
-              -F "sarif=@reports/semgrep.sarif" \
-              -F "commit_sha=${{ github.sha }}" || true
-          else
-            echo "No SARIF found — skipping upload"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Semgrep reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-reports
+          path: reports/
