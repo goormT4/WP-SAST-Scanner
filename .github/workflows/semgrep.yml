@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           echo "Running semgrep scan..."
 
-          # ⚠️ 여기 타겟 경로를 실제 코드 위치에 맞게 수정해줘
+          # ⚠️ 타겟 경로 지정
           # 예: 전체 레포 스캔 -> `.`
           TARGET_PATH="src/wp_plugins"
 
@@ -143,7 +143,33 @@ jobs:
             echo "- Semgrep produced no JSON (likely no matching files or scan failed)." | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
           fi
 
-      - name: Upload Semgrep reports
+      # 🔼 Json 서버 업로드
+      - name: Upload semgrep.json to external dashboard
+        shell: bash
+        env:
+          UPLOAD_URL: "http://3.36.21.85:5000/upload"
+        run: |
+          set -euo pipefail
+
+          if [ ! -s reports/semgrep.json ]; then
+            echo "⚠️ reports/semgrep.json 이 없어 업로드를 건너뜁니다."
+            exit 0
+          fi
+
+          TS="$(date '+%Y%m%d_%H%M%S')"
+          FNAME="semgrep_${TS}.json"
+
+          cp reports/semgrep.json "$FNAME"
+          echo "🚀 서버로 데이터 전송 중... ($FNAME)"
+
+          # curl로 파일 업로드 (폼 필드 이름은 서버쪽 Flask에서 사용하는 key와 맞춰야 함 - 여기선 'file')
+          curl -sS -X POST "$UPLOAD_URL" \
+            -F "file=@${FNAME};filename=${FNAME};type=application/json"
+
+          echo ""
+          echo "✅ 업로드 요청 전송 완료"
+
+      - name: Upload Semgrep reports (GitHub artifact)
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-reports
