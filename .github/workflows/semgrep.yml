@@ -144,8 +144,7 @@ jobs:
             echo "- Semgrep produced no JSON (likely no matching files or scan failed)." | tee -a "$GITHUB_STEP_SUMMARY" "$REPORT_FILE"
           fi
 
-      # 🔼 Json 서버 업로드
-      - name: Upload semgrep.json to external dashboard
+      - name: Upload semgrep.json to external dashboard (debug)
         shell: bash
         env:
           UPLOAD_URL: "http://3.36.21.85:5000/upload"
@@ -163,12 +162,21 @@ jobs:
           cp reports/semgrep.json "$FNAME"
           echo "🚀 서버로 데이터 전송 중... ($FNAME)"
 
-          # curl로 파일 업로드 (폼 필드 이름은 서버쪽 Flask에서 사용하는 key와 맞춰야 함 - 여기선 'file')
-          curl -sS -X POST "$UPLOAD_URL" \
-            -F "file=@${FNAME};filename=${FNAME};type=application/json"
+          # 디버그용 옵션:
+          #  -v : verbose, 어떤 단계에서 멈추는지 출력
+          #  --connect-timeout : 연결 시도 제한
+          #  --max-time : 전체 요청 제한
+          curl -v -X POST "$UPLOAD_URL" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -w '\n[HTTP_CODE] %{http_code}\n' \
+            -F "file=@${FNAME};filename=${FNAME};type=application/json" || {
+              echo "❌ curl 실패 (exit code: $?)"
+              exit 1
+            }
 
-          echo ""
           echo "✅ 업로드 요청 전송 완료"
+
 
       - name: Upload Semgrep reports (GitHub artifact)
         uses: actions/upload-artifact@v4
